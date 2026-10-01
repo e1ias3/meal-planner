@@ -1,3 +1,6 @@
+Here's the complete current file — select all, delete, and paste this into `index.html` on GitHub, then commit:
+
+```html
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -60,12 +63,21 @@
   .meal-chip{display:flex; justify-content:space-between; align-items:center; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:9px 11px; margin-bottom:6px; font-size:14px;}
   .meal-chip button.rm{background:none; border:none; color:var(--muted); font-size:16px; cursor:pointer; padding:0 4px;}
   .add-meal-btn{width:100%; background:none; border:1px dashed var(--line); border-radius:8px; padding:8px; color:var(--sage-dark); font-size:13.5px; cursor:pointer;}
+  .day-nutrition{color:var(--muted); font-size:12.5px; margin:-2px 0 8px; padding-left:2px;}
 
   .section-head{display:flex; align-items:center; gap:8px; margin:18px 0 8px; padding-bottom:4px; border-bottom:1px solid var(--line);}
-  .section-head:first-child{margin-top:0;}
-  .section-head .dot{width:8px; height:8px; border-radius:50%; background:var(--sage);}
+  .section-head .dot{width:8px; height:8px; border-radius:50%; background:var(--sage); flex-shrink:0;}
   .section-head h3{font-size:14px; font-weight:600; text-transform:none;}
   .section-head .count{margin-left:auto; color:var(--muted); font-size:12.5px;}
+
+  details.cat-group{margin-bottom:4px;}
+  details.cat-group:first-of-type .section-head{margin-top:0;}
+  details.cat-group summary.section-head{cursor:pointer; list-style:none;}
+  details.cat-group summary.section-head::-webkit-details-marker{display:none;}
+  details.cat-group summary.section-head::marker{content:'';}
+  details.cat-group summary.section-head .chev{margin-left:0; color:var(--muted); font-size:15px; transition:transform .15s; flex-shrink:0;}
+  details.cat-group[open] summary.section-head .chev{transform:rotate(90deg);}
+  details.cat-group .cat-body{padding-top:2px;}
 
   .item-row{display:flex; align-items:center; gap:10px; padding:9px 2px; border-bottom:1px solid var(--line);}
   .item-row:last-child{border-bottom:none;}
@@ -89,6 +101,9 @@
   textarea{resize:vertical; min-height:60px;}
   .ing-row{display:grid; grid-template-columns:2.2fr 0.7fr 0.8fr 1.1fr auto; gap:6px; margin-bottom:6px; align-items:center;}
   .ing-row input, .ing-row select{padding:7px 8px; font-size:13px;}
+  .nutri-row{display:grid; grid-template-columns:repeat(4,1fr); gap:8px;}
+  .nutri-row .nutri-label{display:block; font-size:11px; color:var(--muted); margin-bottom:3px;}
+  .nutri-row input{padding:7px 8px; font-size:13px;}
   .modal-actions{display:flex; gap:8px; margin-top:18px;}
   .modal-actions .btn{flex:1; text-align:center;}
   .link-btn{background:none; border:none; color:var(--sage-dark); font-size:13.5px; cursor:pointer; padding:6px 0;}
@@ -109,9 +124,9 @@
   <div class="topbar">
     <h1>Household Meals</h1>
     <div class="tabs">
+      <button class="tab" data-tab="plan">Meal Plan</button>
+      <button class="tab" data-tab="grocery">Grocery List</button>
       <button class="tab" data-tab="recipes">Recipes</button>
-      <button class="tab" data-tab="plan">Plan</button>
-      <button class="tab" data-tab="grocery">List</button>
     </div>
   </div>
   <main id="view"></main>
@@ -119,14 +134,16 @@
 <div id="modal-root"></div>
 
 <script type="module">
+// ==== FILL THESE IN from Firebase Console -> Project settings -> General -> Your apps -> SDK setup and configuration ====
 const FIREBASE_CONFIG = {
-  apiKey: "AIzaSyA5TYNYDbFKLoYqlob-7_bOQg4Rvqe0ts4",
-  authDomain: "meal-planner-a06dc.firebaseapp.com",
-  projectId: "meal-planner-a06dc",
-  storageBucket: "meal-planner-a06dc.firebasestorage.app",
-  messagingSenderId: "467509120711",
-  appId: "1:467509120711:web:6deef9e40778e69399b8e2"
+  apiKey: "AIzaSyAeaS30ad3okzIKhU-16Kf6tPnOaNaSGVw",
+  authDomain: "meal-planner-952e2.firebaseapp.com",
+  projectId: "meal-planner-952e2",
+  storageBucket: "meal-planner-952e2.firebasestorage.app",
+  messagingSenderId: "45054568033",
+  appId: "1:45054568033:web:e4e9f295552b99aafeac20"
 };
+// ===========================================================================================================
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-app.js";
 import {
@@ -138,10 +155,40 @@ const db = getFirestore(firebaseApp);
 const docRef = doc(db, "householdData", "main");
 
 const DEFAULT_CATEGORIES = ['Produce','Dairy & Eggs','Meat & Seafood','Snacks','Frozen','Pantry','Beverages','Household','Other'];
+const DEFAULT_RECIPE_CATEGORIES = ['Breakfast','Lunch & Dinner','Sides & Snacks','Desserts','Beverages','Other'];
+
+// Seeded from the household's TickTick "Recipes" list. Titles + any link/note carried over;
+// ingredients are empty and need to be filled in manually (TickTick had no structured ingredient data).
+const TICKTICK_RECIPES = [
+  { name: 'PB&J', instructions: '', sourceUrl: '', category: 'Lunch & Dinner' },
+  { name: 'Hard boiled eggs', instructions: '', sourceUrl: '', category: 'Sides & Snacks' },
+  { name: 'Chili', instructions: '', sourceUrl: '', category: 'Lunch & Dinner' },
+  { name: 'Tikki Marsala over Spinach', instructions: '', sourceUrl: 'https://www.simplywhisked.com/chicken-tikka-masala/#h-ingredients-amp-substitutions', category: 'Lunch & Dinner' },
+  { name: 'Chicken Vindaloo over Spinach', instructions: '', sourceUrl: '', category: 'Lunch & Dinner' },
+  { name: 'Turkey Taco Meat', instructions: '', sourceUrl: '', category: 'Lunch & Dinner' },
+  { name: 'Baked Potatoes', instructions: '', sourceUrl: '', category: 'Lunch & Dinner' },
+  { name: 'Sheet Pan Veggies', instructions: '', sourceUrl: '', category: 'Sides & Snacks' },
+  { name: 'Pineapple Chicken', instructions: '', sourceUrl: '', category: 'Lunch & Dinner' },
+  { name: 'Stuffed Peppers', instructions: '', sourceUrl: '', category: 'Lunch & Dinner' },
+  { name: 'Chickpea Pasta', instructions: 'w/ Ground turkey or sausages', sourceUrl: '', category: 'Lunch & Dinner' },
+  { name: 'Grilled corn salad w lime, red onion, & avocado', instructions: '', sourceUrl: '', category: 'Sides & Snacks' },
+  { name: 'Green Curry', instructions: 'Second option: https://www.ambitiouskitchen.com/green-chicken-curry/', sourceUrl: 'https://www.ambitiouskitchen.com/healing-lemongrass-chickpea-thai-green-curry/', category: 'Lunch & Dinner' },
+  { name: 'Thai-Peanut Coconut Cauliflower Chickpea Curry', instructions: '', sourceUrl: 'https://www.ambitiouskitchen.com/thai-peanut-coconut-cauliflower-chickpea-curry/', category: 'Lunch & Dinner' },
+  { name: 'Dal', instructions: '', sourceUrl: 'https://www.ambitiouskitchen.com/dal-recipe/', category: 'Lunch & Dinner' },
+  { name: 'Curry Chicken Noodle Soup', instructions: '', sourceUrl: 'https://www.ambitiouskitchen.com/curry-chicken-noodle-soup/', category: 'Lunch & Dinner' },
+  { name: 'Tomato-Garlic Lentil Bowls', instructions: '', sourceUrl: 'https://www.tasteofhome.com/recipes/tomato-garlic-lentil-bowls/', category: 'Lunch & Dinner' },
+  { name: 'Mediterranean Turkey Skillet', instructions: '', sourceUrl: 'https://www.tasteofhome.com/recipes/mediterranean-turkey-skillet/', category: 'Lunch & Dinner' },
+  { name: 'Chicken Thighs and Spinach', instructions: '', sourceUrl: 'https://www.tasteofhome.com/recipes/chicken-thighs-with-shallots-spinach/', category: 'Lunch & Dinner' }
+];
+
+function seedTickTickRecipes(){
+  return TICKTICK_RECIPES.map(r => ({ id: uid(), name: r.name, instructions: r.instructions, sourceUrl: r.sourceUrl || '', category: r.category || 'Other', servings: 1, nutrition: { calories:null, protein:null, carbs:null, fat:null }, ingredients: [] }));
+}
 const UNITS = ['','pc','oz','lb','g','kg','cup','tbsp','tsp','ml','l','can','pkg','bunch'];
 
 let state = null;
-let activeTab = 'recipes';
+let activeTab = 'plan';
+let applyingRemoteUpdate = false;
 
 function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
 
@@ -169,7 +216,8 @@ function defaultState(){
   }
   return {
     categories: DEFAULT_CATEGORIES.slice(),
-    recipes: [],
+    recipeCategories: DEFAULT_RECIPE_CATEGORIES.slice(),
+    recipes: seedTickTickRecipes(),
     plan: { startDate: start, days },
     grocery: { items: [], selectedDates: days.map(d=>d.date), updatedAt: null }
   };
@@ -184,6 +232,15 @@ function ensurePlanCoversTwoWeeks(){
   }
   if(!state.grocery) state.grocery = { items: [], selectedDates: state.plan.days.map(d=>d.date), updatedAt: null };
   if(!state.categories) state.categories = DEFAULT_CATEGORIES.slice();
+  if(!state.recipeCategories) state.recipeCategories = DEFAULT_RECIPE_CATEGORIES.slice();
+  if(Array.isArray(state.recipes)){
+    for(const r of state.recipes){
+      if(r.sourceUrl == null) r.sourceUrl = '';
+      if(!r.category) r.category = 'Other';
+      if(r.servings == null) r.servings = 1;
+      if(!r.nutrition) r.nutrition = newNutrition();
+    }
+  }
 }
 
 function updateStatus(text){
@@ -215,6 +272,10 @@ async function loadState(){
     if(snap.exists()){
       state = snap.data();
       ensurePlanCoversTwoWeeks();
+      if(Array.isArray(state.recipes) && state.recipes.length === 0){
+        state.recipes = seedTickTickRecipes();
+        await persistNow();
+      }
     } else {
       state = defaultState();
       await persistNow();
@@ -226,8 +287,9 @@ async function loadState(){
   }
   render();
 
+  // Real-time sync: any change written by another device updates this page automatically.
   onSnapshot(docRef, (snap) => {
-    if(document.querySelector('.modal-bg')) return;
+    if(document.querySelector('.modal-bg')) return; // don't clobber an open edit
     if(!snap.exists()) return;
     const incoming = JSON.stringify(snap.data());
     const current = JSON.stringify(state);
@@ -242,6 +304,7 @@ async function loadState(){
   });
 }
 
+// ---------- tab handling ----------
 document.querySelectorAll('.tab').forEach(btn=>{
   btn.addEventListener('click', ()=>{ activeTab = btn.dataset.tab; render(); });
 });
@@ -255,19 +318,35 @@ function render(){
   attachTabListeners();
 }
 
+// =================== RECIPES ===================
 function renderRecipesTab(){
   let html = '';
   if(state.recipes.length===0){
     html += `<div class="empty"><strong>No recipes yet</strong>Add the meals your household makes often.</div>`;
   } else {
+    const byCat = {};
     for(const r of state.recipes){
-      html += `<div class="card recipe-card" data-open-recipe="${r.id}">
-        <div>
-          <div class="name">${esc(r.name)}</div>
-          <div class="meta">${r.ingredients.length} ingredient${r.ingredients.length===1?'':'s'}</div>
-        </div>
-        <div class="chev">›</div>
-      </div>`;
+      const cat = r.category || 'Other';
+      (byCat[cat] = byCat[cat] || []).push(r);
+    }
+    const order = (state.recipeCategories||[]).filter(c=>byCat[c]);
+    for(const cat of Object.keys(byCat)) if(!order.includes(cat)) order.push(cat);
+
+    for(const cat of order){
+      const items = byCat[cat].slice().sort((a,b)=> a.name.localeCompare(b.name));
+      html += `<details class="cat-group" open>
+        <summary class="section-head"><span class="dot"></span><h3>${esc(cat)}</h3><span class="count">${items.length}</span><span class="chev">›</span></summary>
+        <div class="cat-body">`;
+      for(const r of items){
+        html += `<div class="card recipe-card" data-open-recipe="${r.id}">
+          <div>
+            <div class="name">${esc(r.name)}</div>
+            <div class="meta">${r.ingredients.length} ingredient${r.ingredients.length===1?'':'s'}${r.sourceUrl ? ` · <a href="${esc(r.sourceUrl)}" target="_blank" rel="noopener" data-stop-recipe-open>Source</a>` : ''}</div>
+          </div>
+          <div class="chev">›</div>
+        </div>`;
+      }
+      html += `</div></details>`;
     }
   }
   html += `<button class="fab" id="add-recipe-btn">+ Add recipe</button>`;
@@ -275,6 +354,9 @@ function renderRecipesTab(){
 }
 
 function attachTabListeners(){
+  document.querySelectorAll('[data-stop-recipe-open]').forEach(el=>{
+    el.addEventListener('click', e=> e.stopPropagation());
+  });
   document.querySelectorAll('[data-open-recipe]').forEach(el=>{
     el.addEventListener('click', ()=> openRecipeModal(el.dataset.openRecipe));
   });
@@ -324,16 +406,34 @@ function esc(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;',
 
 function openRecipeModal(id){
   const existing = id ? state.recipes.find(r=>r.id===id) : null;
-  const draft = existing ? JSON.parse(JSON.stringify(existing)) : { id: uid(), name:'', instructions:'', ingredients:[ newIngredient() ] };
+  const draft = existing ? JSON.parse(JSON.stringify(existing)) : { id: uid(), name:'', instructions:'', sourceUrl:'', category: (state.recipeCategories && state.recipeCategories[0]) || 'Other', servings: 1, nutrition: newNutrition(), ingredients:[ newIngredient() ] };
+  if(draft.sourceUrl == null) draft.sourceUrl = '';
+  if(!draft.category) draft.category = (state.recipeCategories && state.recipeCategories[0]) || 'Other';
+  if(draft.servings == null) draft.servings = 1;
+  if(!draft.nutrition) draft.nutrition = newNutrition();
 
   const root = document.getElementById('modal-root');
   root.innerHTML = `<div class="modal-bg"><div class="modal">
     <h2>${existing ? 'Edit recipe' : 'Add recipe'}</h2>
     <label>Recipe name</label>
     <input type="text" id="r-name" value="${esc(draft.name)}" placeholder="e.g. Chicken Stir-Fry">
+    <label>Category</label>
+    <select id="r-category">${state.recipeCategories.map(c=>`<option value="${c}" ${c===draft.category?'selected':''}>${c}</option>`).join('')}</select>
+    <button class="link-btn" id="r-new-cat-btn">+ New category</button>
     <label>Ingredients</label>
     <div id="ing-rows"></div>
     <button class="link-btn" id="add-ing-row">+ Add ingredient</button>
+    <label>Servings</label>
+    <input type="number" id="r-servings" value="${draft.servings ?? 1}" min="1" step="1">
+    <label>Nutrition per serving (optional)</label>
+    <div class="nutri-row">
+      <div><span class="nutri-label">Calories</span><input type="number" id="r-nut-cal" value="${draft.nutrition.calories ?? ''}" min="0" step="any"></div>
+      <div><span class="nutri-label">Protein (g)</span><input type="number" id="r-nut-protein" value="${draft.nutrition.protein ?? ''}" min="0" step="any"></div>
+      <div><span class="nutri-label">Carbs (g)</span><input type="number" id="r-nut-carbs" value="${draft.nutrition.carbs ?? ''}" min="0" step="any"></div>
+      <div><span class="nutri-label">Fat (g)</span><input type="number" id="r-nut-fat" value="${draft.nutrition.fat ?? ''}" min="0" step="any"></div>
+    </div>
+    <label>Source URL (optional)</label>
+    <input type="url" id="r-source-url" value="${esc(draft.sourceUrl||'')}" placeholder="https://…">
     <label>Instructions (optional)</label>
     <textarea id="r-instructions" placeholder="Steps, notes, links…">${esc(draft.instructions||'')}</textarea>
     <div class="modal-actions">
@@ -376,6 +476,25 @@ function openRecipeModal(id){
   document.getElementById('cancel-modal-btn').addEventListener('click', closeModal);
   document.getElementById('r-name').addEventListener('input', e=> draft.name = e.target.value);
   document.getElementById('r-instructions').addEventListener('input', e=> draft.instructions = e.target.value);
+  document.getElementById('r-source-url').addEventListener('input', e=> draft.sourceUrl = e.target.value);
+  document.getElementById('r-category').addEventListener('change', e=> draft.category = e.target.value);
+  document.getElementById('r-servings').addEventListener('input', e=> draft.servings = e.target.value);
+  document.getElementById('r-nut-cal').addEventListener('input', e=> draft.nutrition.calories = e.target.value);
+  document.getElementById('r-nut-protein').addEventListener('input', e=> draft.nutrition.protein = e.target.value);
+  document.getElementById('r-nut-carbs').addEventListener('input', e=> draft.nutrition.carbs = e.target.value);
+  document.getElementById('r-nut-fat').addEventListener('input', e=> draft.nutrition.fat = e.target.value);
+  document.getElementById('r-new-cat-btn').addEventListener('click', ()=>{
+    const name = prompt('New recipe category (e.g. Breakfast):');
+    if(name && name.trim() && !state.recipeCategories.includes(name.trim())){
+      state.recipeCategories.push(name.trim());
+      scheduleSave();
+      const sel = document.getElementById('r-category');
+      const opt = document.createElement('option');
+      opt.value = name.trim(); opt.textContent = name.trim();
+      sel.appendChild(opt); sel.value = name.trim();
+      draft.category = name.trim();
+    }
+  });
 
   const delBtn = document.getElementById('del-recipe-btn');
   if(delBtn) delBtn.addEventListener('click', ()=>{
@@ -386,6 +505,16 @@ function openRecipeModal(id){
 
   document.getElementById('save-recipe-btn').addEventListener('click', ()=>{
     if(!draft.name.trim()){ alert('Give the recipe a name.'); return; }
+    draft.sourceUrl = (draft.sourceUrl||'').trim();
+    if(!draft.category) draft.category = 'Other';
+    draft.servings = draft.servings==='' || draft.servings==null ? 1 : Math.max(1, Number(draft.servings));
+    const toNum = v => (v===''||v==null) ? null : Number(v);
+    draft.nutrition = {
+      calories: toNum(draft.nutrition.calories),
+      protein: toNum(draft.nutrition.protein),
+      carbs: toNum(draft.nutrition.carbs),
+      fat: toNum(draft.nutrition.fat)
+    };
     draft.ingredients = draft.ingredients
       .filter(i=>i.name && i.name.trim())
       .map(i=>({ ...i, qty: i.qty===''||i.qty==null ? null : Number(i.qty) }));
@@ -403,8 +532,13 @@ function newIngredient(){
   return { name:'', qty:'', unit:'', category: state.categories[0] };
 }
 
+function newNutrition(){
+  return { calories: null, protein: null, carbs: null, fat: null };
+}
+
 function closeModal(){ document.getElementById('modal-root').innerHTML=''; }
 
+// =================== PLAN ===================
 function renderPlanTab(){
   const days = state.plan.days;
   let html = `<div class="toolbar">
@@ -413,10 +547,28 @@ function renderPlanTab(){
   for(const day of days){
     html += `<div class="day-block">
       <div class="day-head"><span class="dname">${fmtDate(day.date)}</span></div>`;
+    const totals = { calories:0, protein:0, carbs:0, fat:0 };
+    let anyData = false, anyMeal = false;
     for(let idx=0; idx<day.recipeIds.length; idx++){
       const r = state.recipes.find(rr=>rr.id===day.recipeIds[idx]);
       html += `<div class="meal-chip"><span>${r? esc(r.name) : '(deleted recipe)'}</span>
         <button class="rm" data-rm-meal="${day.date}|${idx}">✕</button></div>`;
+      if(r){
+        anyMeal = true;
+        const n = r.nutrition || {};
+        if(n.calories!=null){ totals.calories += n.calories; anyData = true; }
+        if(n.protein!=null){ totals.protein += n.protein; anyData = true; }
+        if(n.carbs!=null){ totals.carbs += n.carbs; anyData = true; }
+        if(n.fat!=null){ totals.fat += n.fat; anyData = true; }
+      }
+    }
+    if(anyMeal && anyData){
+      const parts = [];
+      if(totals.calories) parts.push(`${Math.round(totals.calories)} cal`);
+      if(totals.protein) parts.push(`${Math.round(totals.protein)}g protein`);
+      if(totals.carbs) parts.push(`${Math.round(totals.carbs)}g carbs`);
+      if(totals.fat) parts.push(`${Math.round(totals.fat)}g fat`);
+      html += `<div class="day-nutrition">${parts.join(' · ')}</div>`;
     }
     html += `<button class="add-meal-btn" data-add-meal="${day.date}">+ Add a meal</button>`;
     html += `</div>`;
@@ -469,6 +621,7 @@ function openRecipePicker(date){
   });
 }
 
+// =================== GROCERY ===================
 function renderGroceryTab(){
   const items = state.grocery.items;
   let html = `<div class="toolbar">
@@ -489,7 +642,9 @@ function renderGroceryTab(){
 
     for(const cat of order){
       const catItems = byCat[cat].sort((a,b)=> a.name.localeCompare(b.name));
-      html += `<div class="section-head"><span class="dot"></span><h3>${esc(cat)}</h3><span class="count">${catItems.length}</span></div>`;
+      html += `<details class="cat-group" open>
+        <summary class="section-head"><span class="dot"></span><h3>${esc(cat)}</h3><span class="count">${catItems.length}</span><span class="chev">›</span></summary>
+        <div class="cat-body">`;
       for(const it of catItems){
         const qtyText = [it.qty, it.unit].filter(Boolean).join(' ');
         html += `<div class="item-row ${it.checked?'checked':''}">
@@ -499,6 +654,7 @@ function renderGroceryTab(){
           <button class="del grocery-del" data-id="${it.id}">✕</button>
         </div>`;
       }
+      html += `</div></details>`;
     }
     html += `<div class="toolbar" style="margin-top:14px;">
       <button class="btn small ghost" id="clear-checked-btn">Clear checked</button>
@@ -515,7 +671,7 @@ function generateGroceryList(){
   const selected = new Set(state.grocery.selectedDates && state.grocery.selectedDates.length ? state.grocery.selectedDates : state.plan.days.map(d=>d.date));
   const relevantDays = state.plan.days.filter(d=>selected.has(d.date));
 
-  const aggregated = new Map();
+  const aggregated = new Map(); // key: name.toLowerCase()|unit -> item
   for(const day of relevantDays){
     for(const rid of day.recipeIds){
       const recipe = state.recipes.find(r=>r.id===rid);
@@ -525,7 +681,7 @@ function generateGroceryList(){
         if(aggregated.has(key)){
           const existing = aggregated.get(key);
           if(typeof existing.qty==='number' && typeof ing.qty==='number') existing.qty += ing.qty;
-          else existing.qty = null;
+          else existing.qty = null; // can't combine cleanly, leave blank
         } else {
           aggregated.set(key, { id: uid(), name: ing.name.trim(), qty: ing.qty, unit: ing.unit, category: ing.category || 'Other', checked:false, manual:false });
         }
@@ -533,6 +689,7 @@ function generateGroceryList(){
     }
   }
 
+  // preserve manual items and checked state from prior list
   const manualItems = state.grocery.items.filter(i=>i.manual===true);
   const prevCheckedKeys = new Map();
   for(const it of state.grocery.items){
@@ -617,9 +774,11 @@ function openDayPickerModal(){
   });
 }
 
+// bottom status line
 document.getElementById('app').insertAdjacentHTML('beforeend', '<div id="status-line" class="status"></div>');
 
 loadState();
 </script>
 </body>
 </html>
+```
