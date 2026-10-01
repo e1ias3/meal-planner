@@ -6,7 +6,6 @@
 <title>Household Meals</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Work+Sans:wght@400;500;600&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <style>
   :root{
     --cream:#FAF7F1;
@@ -119,23 +118,30 @@
 </div>
 <div id="modal-root"></div>
 
-<script>
-// ==== FILL THESE IN from Supabase → Project Settings → API ====
-const SUPABASE_URL = 'https://nijfbkcainzpvslygfow.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5pamZia2NhaW56cHZzbHlnZm93Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg2NDMwNDIsImV4cCI6MjEwNDIxOTA0Mn0.JlCJEgwgYCEnubDv5d4rwjYaDI72PzkmQPuMk2fpCvU';
-// ================================================================
+<script type="module">
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyA5TYNYDbFKLoYqlob-7_bOQg4Rvqe0ts4",
+  authDomain: "meal-planner-a06dc.firebaseapp.com",
+  projectId: "meal-planner-a06dc",
+  storageBucket: "meal-planner-a06dc.firebasestorage.app",
+  messagingSenderId: "467509120711",
+  appId: "1:467509120711:web:6deef9e40778e69399b8e2"
+};
 
-window.onerror = (msg) => alert('ERROR: ' + msg);
-const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-const ROW_ID = 'main';
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-app.js";
+import {
+  getFirestore, doc, getDoc, setDoc, onSnapshot
+} from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
+
+const firebaseApp = initializeApp(FIREBASE_CONFIG);
+const db = getFirestore(firebaseApp);
+const docRef = doc(db, "householdData", "main");
 
 const DEFAULT_CATEGORIES = ['Produce','Dairy & Eggs','Meat & Seafood','Snacks','Frozen','Pantry','Beverages','Household','Other'];
 const UNITS = ['','pc','oz','lb','g','kg','cup','tbsp','tsp','ml','l','can','pkg','bunch'];
 
 let state = null;
 let activeTab = 'recipes';
-let isSaving = false;
-let saveTimer = null;
 
 function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
 
@@ -169,29 +175,6 @@ function defaultState(){
   };
 }
 
-async function loadState(){
-  try{
-    const { data, error } = await supabase
-      .from('household_data')
-      .select('value')
-      .eq('id', ROW_ID)
-      .maybeSingle();
-    if(error) throw error;
-    if(data && data.value){
-      state = data.value;
-      ensurePlanCoversTwoWeeks();
-    } else {
-      state = defaultState();
-      await persistNow();
-    }
-  }catch(e){
-    console.error('Load failed:', e);
-    updateStatus('Could not connect — check Supabase URL/key');
-    state = defaultState();
-  }
-  render();
-}
-
 function ensurePlanCoversTwoWeeks(){
   if(!state.plan || !Array.isArray(state.plan.days) || state.plan.days.length === 0){
     const start = todayISO();
@@ -203,57 +186,62 @@ function ensurePlanCoversTwoWeeks(){
   if(!state.categories) state.categories = DEFAULT_CATEGORIES.slice();
 }
 
+function updateStatus(text){
+  const el = document.getElementById('status-line');
+  if(el) el.textContent = text;
+}
+
+let saveTimer = null;
 function scheduleSave(){
   clearTimeout(saveTimer);
   saveTimer = setTimeout(persistNow, 350);
 }
 
 async function persistNow(){
-  isSaving = true;
   updateStatus('Saving…');
   try{
-    const { error } = await supabase
-      .from('household_data')
-      .upsert({ id: ROW_ID, value: state, updated_at: new Date().toISOString() });
-    if(error) throw error;
+    await setDoc(docRef, state);
     updateStatus('Synced');
   }catch(e){
     console.error('Save failed:', e);
     updateStatus('Save failed — will retry');
     setTimeout(scheduleSave, 2000);
   }
-  isSaving = false;
 }
 
-function updateStatus(text){
-  const el = document.getElementById('status-line');
-  if(el) el.textContent = text;
-}
-
-// ---------- polling for cross-device sync ----------
-setInterval(async ()=>{
-  if(document.querySelector('.modal-bg')) return; // don't clobber an open edit
+async function loadState(){
   try{
-    const { data, error } = await supabase
-      .from('household_data')
-      .select('value')
-      .eq('id', ROW_ID)
-      .maybeSingle();
-    if(error) throw error;
-    if(data && data.value){
-      const incoming = JSON.stringify(data.value);
-      const current = JSON.stringify(state);
-      if(incoming !== current){
-        state = data.value;
-        ensurePlanCoversTwoWeeks();
-        render();
-        updateStatus('Updated from another device');
-      }
+    const snap = await getDoc(docRef);
+    if(snap.exists()){
+      state = snap.data();
+      ensurePlanCoversTwoWeeks();
+    } else {
+      state = defaultState();
+      await persistNow();
     }
-  }catch(e){ /* ignore transient errors */ }
-}, 7000);
+  }catch(e){
+    console.error('Load failed:', e);
+    updateStatus('Could not connect — check Firebase config');
+    state = defaultState();
+  }
+  render();
 
-// ---------- tab handling ----------
+  onSnapshot(docRef, (snap) => {
+    if(document.querySelector('.modal-bg')) return;
+    if(!snap.exists()) return;
+    const incoming = JSON.stringify(snap.data());
+    const current = JSON.stringify(state);
+    if(incoming !== current){
+      state = snap.data();
+      ensurePlanCoversTwoWeeks();
+      render();
+      updateStatus('Updated from another device');
+    }
+  }, (e) => {
+    console.error('Sync listener error:', e);
+  });
+}
+
 document.querySelectorAll('.tab').forEach(btn=>{
   btn.addEventListener('click', ()=>{ activeTab = btn.dataset.tab; render(); });
 });
@@ -267,7 +255,6 @@ function render(){
   attachTabListeners();
 }
 
-// =================== RECIPES ===================
 function renderRecipesTab(){
   let html = '';
   if(state.recipes.length===0){
@@ -418,7 +405,6 @@ function newIngredient(){
 
 function closeModal(){ document.getElementById('modal-root').innerHTML=''; }
 
-// =================== PLAN ===================
 function renderPlanTab(){
   const days = state.plan.days;
   let html = `<div class="toolbar">
@@ -483,7 +469,6 @@ function openRecipePicker(date){
   });
 }
 
-// =================== GROCERY ===================
 function renderGroceryTab(){
   const items = state.grocery.items;
   let html = `<div class="toolbar">
@@ -530,7 +515,7 @@ function generateGroceryList(){
   const selected = new Set(state.grocery.selectedDates && state.grocery.selectedDates.length ? state.grocery.selectedDates : state.plan.days.map(d=>d.date));
   const relevantDays = state.plan.days.filter(d=>selected.has(d.date));
 
-  const aggregated = new Map(); // key: name.toLowerCase()|unit -> item
+  const aggregated = new Map();
   for(const day of relevantDays){
     for(const rid of day.recipeIds){
       const recipe = state.recipes.find(r=>r.id===rid);
@@ -540,7 +525,7 @@ function generateGroceryList(){
         if(aggregated.has(key)){
           const existing = aggregated.get(key);
           if(typeof existing.qty==='number' && typeof ing.qty==='number') existing.qty += ing.qty;
-          else existing.qty = null; // can't combine cleanly, leave blank
+          else existing.qty = null;
         } else {
           aggregated.set(key, { id: uid(), name: ing.name.trim(), qty: ing.qty, unit: ing.unit, category: ing.category || 'Other', checked:false, manual:false });
         }
@@ -548,7 +533,6 @@ function generateGroceryList(){
     }
   }
 
-  // preserve manual items and checked state from prior list
   const manualItems = state.grocery.items.filter(i=>i.manual===true);
   const prevCheckedKeys = new Map();
   for(const it of state.grocery.items){
@@ -633,7 +617,6 @@ function openDayPickerModal(){
   });
 }
 
-// bottom status line
 document.getElementById('app').insertAdjacentHTML('beforeend', '<div id="status-line" class="status"></div>');
 
 loadState();
