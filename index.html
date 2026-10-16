@@ -959,6 +959,17 @@ function renderPantryModal() {
   html += '<button class="btn-primary" style="flex:0 0 auto; padding:10px 16px;" onclick="addPantryFromInput()">Add</button>';
   html += '</div></div>';
 
+  // USDA API key setting
+  var currentKey = '';
+  try { currentKey = localStorage.getItem('usda-api-key') || ''; } catch(e) {}
+  html += '<div class="form-group" style="margin-top:20px; border-top:1px solid var(--line); padding-top:16px;">';
+  html += '<label>USDA FoodData Central API Key (optional)</label>';
+  html += '<p style="font-size:11px; color:var(--muted); margin-bottom:8px;">The default DEMO_KEY is rate-limited (30 req/hr). Get your own free key at <a href="https://fdc.nal.usda.gov/api-key-signup" target="_blank">fdc.nal.usda.gov</a> for 1000 req/hr.</p>';
+  html += '<div style="display:flex; gap:8px;">';
+  html += '<input id="usda-key-input" placeholder="DEMO_KEY" value="' + esc(currentKey) + '" style="flex:1;" onkeydown="if(event.key===\'Enter\')saveUsdaKey()">';
+  html += '<button class="btn-primary" style="flex:0 0 auto; padding:10px 16px;" onclick="saveUsdaKey()">Save</button>';
+  html += '</div></div>';
+
   html += '</div></div>';
   app.innerHTML = html;
 }
@@ -1508,41 +1519,38 @@ function estimateGrams(quantity, unit, name) {
 function fetchNutritionForIngredient(ingName) {
   var normName = normalizeName(ingName);
 
-  // Return cached result if available
-  if (nutritionCache[normName]) {
+  // Check in-memory cache
+  if (nutritionCache[normName] !== undefined) {
     return Promise.resolve(nutritionCache[normName]);
   }
 
-  var url = USDA_API_BASE + '/foods/search?api_key=' + USDA_API_KEY +
-    '&query=' + encodeURIComponent(ingName) +
-    '&dataType=SR%20Legacy&pageSize=1';
+  // Check localStorage cache
+  var storageKey = 'nutrition-cache-' + normName;
+  try {
+    var cached = localStorage.getItem(storageKey);
+    if (cached) {
+      var entry = JSON.parse(cached);
+      nutritionCache[normName] = entry;
+      return Promise.resolve(entry);
+    }
+  } catch(e) { /* ignore */ }
 
-  // Fallback to Survey (FNDDS) if SR Legacy has no results
+  // Single API call: search SR Legacy first, which has per-100g data
+  // If no results, the broad search (no dataType filter) is the fallback in the SAME response
+  var apiKey = USDA_API_KEY;
+  // Allow user to override the key via localStorage
+  try {
+    var customKey = localStorage.getItem('usda-api-key');
+    if (customKey) apiKey = customKey;
+  } catch(e) { /* ignore */ }
+
+  var url = USDA_API_BASE + '/foods/search?api_key=' + apiKey +
+    '&query=' + encodeURIComponent(ingName) + '&pageSize=1';
+
   return fetch(url)
     .then(function(r) {
       if (!r.ok) throw new Error('API error: ' + r.status);
       return r.json();
-    })
-    .then(function(data) {
-      var foods = data.foods || [];
-      if (foods.length === 0) {
-        // Try FNDDS
-        return fetch(USDA_API_BASE + '/foods/search?api_key=' + USDA_API_KEY +
-          '&query=' + encodeURIComponent(ingName) +
-          '&dataType=Survey%20(FNDDS)&pageSize=1')
-          .then(function(r2) { return r2.json(); });
-      }
-      return data;
-    })
-    .then(function(data) {
-      var foods = data.foods || [];
-      if (foods.length === 0) {
-        // Try without dataType filter (broader search)
-        return fetch(USDA_API_BASE + '/foods/search?api_key=' + USDA_API_KEY +
-          '&query=' + encodeURIComponent(ingName) + '&pageSize=1')
-          .then(function(r3) { return r3.json(); });
-      }
-      return data;
     })
     .then(function(data) {
       var foods = data.foods || [];
@@ -1554,7 +1562,9 @@ function fetchNutritionForIngredient(ingName) {
       var food = foods[0];
       var nutrients = {};
 
-      // SR Legacy and FNDDS values are per 100g
+      // Values are per 100g for SR Legacy and FNDDS; for Branded foods,
+      // nutrients are per serving — but we use per-100g by default.
+      // The API returns per-100g for SR Legacy and Survey (FNDDS) types.
       for (var i = 0; i < (food.foodNutrients || []).length; i++) {
         var n = food.foodNutrients[i];
         if (n.nutrientName && n.value != null) {
@@ -1570,10 +1580,15 @@ function fetchNutritionForIngredient(ingName) {
         description: food.description,
         dataType: food.dataType,
         nutrients: nutrients, // per 100g
-        gramWeight: 100       // base is per 100g
+        gramWeight: 100
       };
 
+      // Cache in memory and localStorage
       nutritionCache[normName] = entry;
+      try {
+        localStorage.setItem(storageKey, JSON.stringify(entry));
+      } catch(e) { /* localStorage full or unavailable */ }
+
       return entry;
     })
     .catch(function(err) {
@@ -1763,13 +1778,26 @@ window.togglePerServing = function() {
   }
 };
 
+window.saveUsdaKey = function() {
+  var key = document.getElementById('usda-key-input').value.trim();
+  try {
+    if (key) {
+      localStorage.setItem('usda-api-key', key);
+    } else {
+      localStorage.removeItem('usda-api-key');
+    }
+  } catch(e) {}
+  showToast(key ? 'API key saved' : 'API key cleared (using DEMO_KEY)');
+};
+
 window.refreshNutrition = function(recipeId) {
-  // Clear cache for this recipe's ingredients
+  // Clear cache for this recipe's ingredients (both in-memory and localStorage)
   var recipe = findRecipe(recipeId);
   if (recipe && recipe.ingredients) {
     for (var i = 0; i < recipe.ingredients.length; i++) {
       var normName = normalizeName(recipe.ingredients[i].name);
       delete nutritionCache[normName];
+      try { localStorage.removeItem('nutrition-cache-' + normName); } catch(e) {}
     }
   }
   if (recipe) loadAndRenderNutrition(recipe);
