@@ -167,6 +167,25 @@
   .recipe-detail .ing-list li:last-child{border-bottom:none;}
   .recipe-detail .ing-qty{color:var(--muted); font-weight:500; margin-right:8px;}
 
+  /* --- Nutrition facts --- */
+  .nutrition-section{margin-top:20px; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px;}
+  .nutrition-section h3{margin-bottom:12px; font-size:16px;}
+  .nutrition-loading{text-align:center; color:var(--muted); padding:20px; font-size:13px;}
+  .nutrition-error{text-align:center; color:var(--danger); padding:12px; font-size:13px;}
+  .nutrition-table{width:100%; border-collapse:collapse; font-size:13px;}
+  .nutrition-table th{text-align:left; padding:8px 0; border-bottom:2px solid var(--ink); font-family:'Fraunces',serif; font-size:14px;}
+  .nutrition-table td{padding:6px 0; border-bottom:1px solid var(--line);}
+  .nutrition-table td.nutrient-name{font-weight:500;}
+  .nutrition-table td.nutrient-value{text-align:right; color:var(--muted); white-space:nowrap;}
+  .nutrition-table .per-serving-row td{border-bottom:2px solid var(--ink); padding-bottom:10px; font-family:'Fraunces',serif; font-size:15px; font-weight:600;}
+  .nutrition-table .total-calories{font-size:18px; font-family:'Fraunces',serif; font-weight:600;}
+  .nutrition-table .total-calories .cal-value{font-size:24px;}
+  .nutrition-table .calories-row td{padding:10px 0; border-bottom:2px solid var(--ink);}
+  .nutrition-source{font-size:11px; color:var(--muted); margin-top:10px; text-align:center;}
+  .nutrition-refresh-btn{font-size:11px; color:var(--sage); background:none; border:1px solid var(--line); border-radius:6px; padding:4px 10px; margin-top:8px; cursor:pointer;}
+  .nutrition-per-serving-toggle{font-size:12px; color:var(--muted); margin-bottom:8px;}
+  .nutrition-per-serving-toggle label{display:flex; align-items:center; gap:6px; cursor:pointer;}
+
   /* --- Category selector in add-item --- */
   .category-select{width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:8px; font-size:14px; background:var(--card); font-family:inherit; margin-bottom:6px;}
 
@@ -307,7 +326,8 @@ var state = {
   modal: null,
   recipeDetail: null,
   searchQuery: '',
-  activeTagFilter: null
+  activeTagFilter: null,
+  showTotalNutrition: false
 };
 
 // ══════════════════════════════════════════════════════════════
@@ -570,7 +590,7 @@ function render() {
 
   var html = '';
   html += '<div class="topbar">';
-  html += '<h1>🐴 Household Meals</h1>';
+  html += '<h1>Household Meals</h1>';
   html += '<div class="tabs">';
   html += '<button class="tab ' + (state.activeTab === 'meals' ? 'active' : '') + '" onclick="setTab(\'meals\')">Meals</button>';
   html += '<button class="tab ' + (state.activeTab === 'recipes' ? 'active' : '') + '" onclick="setTab(\'recipes\')">Recipes</button>';
@@ -827,10 +847,16 @@ function renderRecipeDetail() {
     html += '<div style="white-space:pre-wrap; font-size:14px; line-height:1.6;">' + esc(r.instructions) + '</div>';
   }
 
+  // Nutrition section (loaded async after render)
+  html += renderNutritionSection(r);
+
   html += '</main>';
   html += '<button class="fab" onclick="editRecipe(\'' + r.id + '\')">✏️ Edit Recipe</button>';
 
   app.innerHTML = html;
+
+  // Trigger async nutrition load
+  loadAndRenderNutrition(r);
 }
 
 // --- Modals ---
@@ -1367,6 +1393,387 @@ if (state.recipes.length === 0 && !localStorage.getItem('household-meals-demo-lo
   localStorage.setItem('household-meals-demo-loaded', '1');
   render();
 }
+
+// ══════════════════════════════════════════════════════════════
+// NUTRITION (USDA FoodData Central API)
+// ══════════════════════════════════════════════════════════════
+
+var USDA_API_KEY = 'DEMO_KEY';
+var USDA_API_BASE = 'https://api.nal.usda.gov/fdc/v1';
+
+// Nutrition cache: keyed by ingredient name (normalized)
+// Each entry: { fdcId, description, nutrients: {name: {value, unit} }, gramsPer100: 100 }
+var nutritionCache = {};
+var nutritionLoading = false;
+var nutritionError = null;
+
+// Key nutrients to display (in order)
+var KEY_NUTRIENTS = [
+  { id: 'Energy',              name: 'Calories',        unit: 'kcal', showPerServing: true },
+  { id: 'Protein',             name: 'Protein',          unit: 'g' },
+  { id: 'Total lipid (fat)',   name: 'Total Fat',        unit: 'g' },
+  { id: 'Carbohydrate, by difference', name: 'Total Carbohydrate', unit: 'g' },
+  { id: 'Fiber, total dietary', name: 'Dietary Fiber',   unit: 'g' },
+  { id: 'Total Sugars',        name: 'Sugars',            unit: 'g' },
+  { id: 'Sodium, Na',          name: 'Sodium',           unit: 'mg' },
+  { id: 'Cholesterol',         name: 'Cholesterol',      unit: 'mg' },
+  { id: 'Calcium, Ca',         name: 'Calcium',           unit: 'mg' },
+  { id: 'Iron, Fe',            name: 'Iron',              unit: 'mg' },
+  { id: 'Potassium, K',        name: 'Potassium',         unit: 'mg' },
+  { id: 'Vitamin C, total ascorbic acid', name: 'Vitamin C', unit: 'mg' },
+  { id: 'Vitamin A, RAE',      name: 'Vitamin A',        unit: 'mcg' }
+];
+
+// Unit-to-grams conversion (approximate weights for common cooking units)
+// These are used to estimate the gram weight of an ingredient portion
+var UNIT_GRAMS = {
+  // Weight units
+  'g': 1, 'gram': 1, 'grams': 1, 'gr': 1,
+  'kg': 1000, 'kilogram': 1000, 'kilograms': 1000,
+  'oz': 28.35, 'ounce': 28.35, 'ounces': 28.35,
+  'lb': 453.6, 'lbs': 453.6, 'pound': 453.6, 'pounds': 453.6,
+  // Volume units (approximate, assumes water-like density for most foods)
+  'tsp': 5, 'teaspoon': 5, 'teaspoons': 5,
+  'tbsp': 15, 'tablespoon': 15, 'tablespoons': 15,
+  'cup': 240, 'cups': 240,
+  'ml': 1, 'milliliter': 1, 'milliliters': 1, 'cc': 1,
+  'l': 1000, 'liter': 1000, 'liters': 1000, 'litre': 1000, 'litres': 1000,
+  'pint': 473, 'pints': 473,
+  'quart': 946, 'quarts': 946, 'qt': 946,
+  'fl oz': 30, 'fluid ounce': 30, 'fluid ounces': 30,
+  // Common food-specific units (approximate)
+  'clove': 5, 'cloves': 5,
+  'head': 500, 'heads': 500,        // for lettuce, broccoli, cabbage
+  'piece': 30, 'pieces': 30,         // generic piece
+  'slice': 30, 'slices': 30,        // bread slice
+  'stick': 113, 'sticks': 113,       // butter stick (1/2 cup)
+  'can': 400, 'cans': 400,           // 15 oz can
+  'pinch': 0.3, 'dash': 0.6,
+  'small': 100, 'medium': 150, 'large': 200,
+  'whole': 200,
+};
+
+// Specific gram weights for common items (overrides the generic unit conversion)
+var INGREDIENT_GRAMS = {
+  'egg': 50, 'eggs': 50,
+  'garlic clove': 5, 'garlic': 5,
+  'onion': 150, 'onions': 150,
+  'banana': 118, 'bananas': 118,
+  'apple': 182, 'apples': 182,
+  'tomato': 123, 'tomatoes': 123,
+  'potato': 173, 'potatoes': 173,
+  'carrot': 61, 'carrots': 61,
+  'lemon': 58, 'lemons': 58,
+  'lime': 67, 'limes': 67,
+  'broccoli head': 500, 'broccoli': 150,
+  'bell pepper': 120, 'bell peppers': 120,
+  'cucumber': 200, 'cucumbers': 200,
+  'chicken breast': 170, 'chicken breast raw': 170,
+  'salmon fillet': 170, 'salmon': 170,
+};
+
+function estimateGrams(quantity, unit, name) {
+  if (!quantity) return 0;
+  var normName = normalizeName(name);
+
+  // Check specific ingredient overrides first
+  for (var ing in INGREDIENT_GRAMS) {
+    if (normName === normalizeName(ing) || normName.indexOf(normalizeName(ing)) !== -1) {
+      // If unit is empty or "whole" or "piece", use per-item weight
+      if (!unit || unit === 'whole' || unit === 'piece' || unit === 'pieces') {
+        return quantity * INGREDIENT_GRAMS[ing];
+      }
+    }
+  }
+
+  // Check unit conversion
+  if (unit) {
+    var normUnit = unit.toLowerCase().trim();
+    if (UNIT_GRAMS[normUnit]) {
+      return quantity * UNIT_GRAMS[normUnit];
+    }
+    // Try singular/plural
+    if (normUnit.endsWith('s')) {
+      var singular = normUnit.slice(0, -1);
+      if (UNIT_GRAMS[singular]) return quantity * UNIT_GRAMS[singular];
+    }
+  }
+
+  // Fallback: if no unit, assume 100g per unit (reasonable for "1 onion", "2 tomatoes")
+  if (!unit) return quantity * 100;
+
+  return quantity * 100; // default fallback
+}
+
+function fetchNutritionForIngredient(ingName) {
+  var normName = normalizeName(ingName);
+
+  // Return cached result if available
+  if (nutritionCache[normName]) {
+    return Promise.resolve(nutritionCache[normName]);
+  }
+
+  var url = USDA_API_BASE + '/foods/search?api_key=' + USDA_API_KEY +
+    '&query=' + encodeURIComponent(ingName) +
+    '&dataType=SR%20Legacy&pageSize=1';
+
+  // Fallback to Survey (FNDDS) if SR Legacy has no results
+  return fetch(url)
+    .then(function(r) {
+      if (!r.ok) throw new Error('API error: ' + r.status);
+      return r.json();
+    })
+    .then(function(data) {
+      var foods = data.foods || [];
+      if (foods.length === 0) {
+        // Try FNDDS
+        return fetch(USDA_API_BASE + '/foods/search?api_key=' + USDA_API_KEY +
+          '&query=' + encodeURIComponent(ingName) +
+          '&dataType=Survey%20(FNDDS)&pageSize=1')
+          .then(function(r2) { return r2.json(); });
+      }
+      return data;
+    })
+    .then(function(data) {
+      var foods = data.foods || [];
+      if (foods.length === 0) {
+        // Try without dataType filter (broader search)
+        return fetch(USDA_API_BASE + '/foods/search?api_key=' + USDA_API_KEY +
+          '&query=' + encodeURIComponent(ingName) + '&pageSize=1')
+          .then(function(r3) { return r3.json(); });
+      }
+      return data;
+    })
+    .then(function(data) {
+      var foods = data.foods || [];
+      if (foods.length === 0) {
+        nutritionCache[normName] = null;
+        return null;
+      }
+
+      var food = foods[0];
+      var nutrients = {};
+
+      // SR Legacy and FNDDS values are per 100g
+      for (var i = 0; i < (food.foodNutrients || []).length; i++) {
+        var n = food.foodNutrients[i];
+        if (n.nutrientName && n.value != null) {
+          nutrients[n.nutrientName] = {
+            value: n.value,
+            unit: n.unitName
+          };
+        }
+      }
+
+      var entry = {
+        fdcId: food.fdcId,
+        description: food.description,
+        dataType: food.dataType,
+        nutrients: nutrients, // per 100g
+        gramWeight: 100       // base is per 100g
+      };
+
+      nutritionCache[normName] = entry;
+      return entry;
+    })
+    .catch(function(err) {
+      console.error('Nutrition fetch error for "' + ingName + '":', err);
+      nutritionCache[normName] = null;
+      return null;
+    });
+}
+
+function calculateRecipeNutrition(recipe) {
+  if (!recipe || !recipe.ingredients || recipe.ingredients.length === 0) {
+    return Promise.resolve(null);
+  }
+
+  var servings = recipe.servings || 4;
+  var promises = [];
+
+  for (var i = 0; i < recipe.ingredients.length; i++) {
+    var ing = recipe.ingredients[i];
+    promises.push(fetchNutritionForIngredient(ing.name).then(function(entry) {
+      return { ingredient: ing, entry: entry };
+    }));
+  }
+
+  return Promise.all(promises).then(function(results) {
+    // Sum up nutrients per 100g for each ingredient, scaled by estimated grams
+    var totals = {}; // nutrient name -> { value, unit }
+    var ingredientDetails = [];
+
+    for (var i = 0; i < results.length; i++) {
+      var r = results[i];
+      var ing = r.ingredient;
+      var entry = r.entry;
+
+      if (!entry) {
+        ingredientDetails.push({
+          name: ing.name,
+          matched: false,
+          grams: 0
+        });
+        continue;
+      }
+
+      var grams = estimateGrams(ing.quantity, ing.unit, ing.name);
+      var scale = grams / 100; // scale from per-100g to actual grams
+
+      ingredientDetails.push({
+        name: ing.name,
+        matched: true,
+        usdaName: entry.description,
+        fdcId: entry.fdcId,
+        grams: Math.round(grams)
+      });
+
+      for (var nutName in entry.nutrients) {
+        var nut = entry.nutrients[nutName];
+        if (!totals[nutName]) {
+          totals[nutName] = { value: 0, unit: nut.unit };
+        }
+        totals[nutName].value += nut.value * scale;
+      }
+    }
+
+    // Calculate per-serving by dividing by servings
+    var perServing = {};
+    for (var nutName in totals) {
+      perServing[nutName] = {
+        value: totals[nutName].value / servings,
+        unit: totals[nutName].unit
+      };
+    }
+
+    return {
+      perServing: perServing,
+      total: totals,
+      ingredientDetails: ingredientDetails,
+      servings: servings
+    };
+  });
+}
+
+function renderNutritionSection(recipe) {
+  // Show loading state first
+  var html = '<div class="nutrition-section" id="nutrition-section">';
+  html += '<h3>📊 Nutrition Facts</h3>';
+  html += '<div class="nutrition-loading" id="nutrition-loading">Looking up ingredients on USDA FoodData Central…</div>';
+  html += '</div>';
+  return html;
+}
+
+function loadAndRenderNutrition(recipe) {
+  nutritionLoading = true;
+  nutritionError = null;
+
+  calculateRecipeNutrition(recipe).then(function(result) {
+    nutritionLoading = false;
+
+    if (!result) {
+      var el = document.getElementById('nutrition-loading');
+      if (el) el.textContent = 'No ingredients to analyze.';
+      return;
+    }
+
+    var section = document.getElementById('nutrition-section');
+    if (!section) return;
+
+    var html = '<h3>📊 Nutrition Facts</h3>';
+    html += '<div class="nutrition-per-serving-toggle">';
+    html += '<label><input type="checkbox" id="per-serving-toggle" checked onchange="togglePerServing()"> Per serving (' + result.servings + ' servings)</label>';
+    html += '</div>';
+
+    // Get key nutrients
+    var nutrients = state.showTotalNutrition ? result.total : result.perServing;
+
+    // Find calories
+    var calNut = nutrients['Energy'] || nutrients['Energy, kcal'];
+    var calories = calNut ? Math.round(calNut.value) : null;
+
+    // Build table
+    html += '<table class="nutrition-table">';
+    html += '<tr class="calories-row total-calories"><td>Calories</td><td class="cal-value">' + (calories !== null ? calories : '—') + '</td></tr>';
+
+    for (var i = 0; i < KEY_NUTRIENTS.length; i++) {
+      var kn = KEY_NUTRIENTS[i];
+      if (kn.id === 'Energy') continue; // already shown above
+
+      var nut = nutrients[kn.id];
+      if (!nut) continue;
+
+      var val = nut.value;
+      var unit = nut.unit || kn.unit;
+
+      // Round appropriately
+      if (unit === 'g' || unit === 'G') {
+        val = Math.round(val * 10) / 10;
+        if (val === 0) continue;
+      } else if (unit === 'mg' || unit === 'MG') {
+        val = Math.round(val);
+        if (val === 0) continue;
+      } else if (unit === 'mcg' || unit === 'UG') {
+        val = Math.round(val);
+        if (val === 0) continue;
+      } else {
+        val = Math.round(val * 10) / 10;
+      }
+
+      html += '<tr><td class="nutrient-name">' + kn.name + '</td><td class="nutrient-value">' + val + ' ' + unit + '</td></tr>';
+    }
+
+    html += '</table>';
+
+    // Show ingredient match details
+    if (result.ingredientDetails && result.ingredientDetails.length) {
+      var matchedCount = result.ingredientDetails.filter(function(d) { return d.matched; }).length;
+      var unmatchedCount = result.ingredientDetails.length - matchedCount;
+      html += '<div class="nutrition-source">';
+      html += '📊 ' + matchedCount + ' of ' + result.ingredientDetails.length + ' ingredients matched to USDA FoodData Central';
+      if (unmatchedCount > 0) {
+        html += '<br>Not found: ' + result.ingredientDetails.filter(function(d) { return !d.matched; }).map(function(d) { return d.name; }).join(', ');
+      }
+      html += '<br>Values are estimates based on standard unit-to-gram conversions.';
+      html += '</div>';
+    }
+
+    html += '<button class="nutrition-refresh-btn" onclick="refreshNutrition(\'' + recipe.id + '\')">↻ Refresh</button>';
+    html += '</div>';
+
+    section.innerHTML = html;
+  }).catch(function(err) {
+    nutritionLoading = false;
+    nutritionError = err.message;
+    var section = document.getElementById('nutrition-section');
+    if (section) {
+      section.innerHTML = '<h3>📊 Nutrition Facts</h3><div class="nutrition-error">Could not load nutrition data: ' + esc(err.message) + '</div>';
+    }
+  });
+}
+
+window.togglePerServing = function() {
+  state.showTotalNutrition = !state.showTotalNutrition;
+  var checkbox = document.getElementById('per-serving-toggle');
+  if (checkbox) state.showTotalNutrition = !checkbox.checked;
+  // Re-render the nutrition section
+  if (state.recipeDetail) {
+    var recipe = findRecipe(state.recipeDetail);
+    if (recipe) loadAndRenderNutrition(recipe);
+  }
+};
+
+window.refreshNutrition = function(recipeId) {
+  // Clear cache for this recipe's ingredients
+  var recipe = findRecipe(recipeId);
+  if (recipe && recipe.ingredients) {
+    for (var i = 0; i < recipe.ingredients.length; i++) {
+      var normName = normalizeName(recipe.ingredients[i].name);
+      delete nutritionCache[normName];
+    }
+  }
+  if (recipe) loadAndRenderNutrition(recipe);
+};
 
 })(); // IIFE
 </script>
